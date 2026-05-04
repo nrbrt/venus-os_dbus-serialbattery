@@ -25,6 +25,13 @@ BLE_CHARACTERISTICS_RX_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
 MIN_RESPONSE_SIZE = 6
 MAX_RESPONSE_SIZE = 256
 
+# Reconnect back-off when BleakScanner / BleakClient raises a transient
+# error. Previously the driver set self.run = False and required a
+# supervisor restart; now bt_main_loop() returns and background_loop()
+# re-enters after this back-off.
+RECONNECT_BACKOFF_INITIAL_S = 5
+RECONNECT_BACKOFF_MAX_S = 60
+
 
 class LltJbd_Ble(LltJbd):
     BATTERYTYPE = "LLT/JBD BLE"
@@ -44,6 +51,8 @@ class LltJbd_Ble(LltJbd):
         self.device: Optional[BLEDevice] = None
         self.response_queue: Optional[asyncio.Queue] = None
         self.ready_event: Optional[asyncio.Event] = None
+
+        self.reconnect_backoff_s = RECONNECT_BACKOFF_INITIAL_S
 
         self.hci_uart_ok = True
         if not os.path.isfile("/tmp/dbus-blebattery-hciattach"):
@@ -90,7 +99,10 @@ class LltJbd_Ble(LltJbd):
             sleep(5)
 
         if not self.device:
-            self.run = False
+            # Don't kill the driver — background_loop() will retry after a
+            # back-off so a temporary scanner failure (BlueZ hiccup, BMS
+            # asleep) doesn't require a supervisor restart.
+            await self._reconnect_backoff()
             return
 
         try:
@@ -100,6 +112,9 @@ class LltJbd_Ble(LltJbd):
                 self.bt_loop = asyncio.get_event_loop()
                 self.response_queue = asyncio.Queue()
                 self.ready_event.set()
+                # Successful connection — reset back-off so the next dropout
+                # starts retrying quickly again.
+                self.reconnect_backoff_s = RECONNECT_BACKOFF_INITIAL_S
                 while self.run and client.is_connected and self.main_thread.is_alive():
                     await asyncio.sleep(0.1)
             self.bt_loop = None
@@ -110,8 +125,8 @@ class LltJbd_Ble(LltJbd):
             file = exception_traceback.tb_frame.f_code.co_filename
             line = exception_traceback.tb_lineno
             logger.error(f"BleakClient(): asyncio.exceptions.TimeoutError: {repr(exception_object)} of type {exception_type} " f"in {file} line #{line}")
-            # needed?
-            self.run = False
+            self.bt_loop = None
+            await self._reconnect_backoff()
             return
 
         except TimeoutError:
@@ -119,8 +134,8 @@ class LltJbd_Ble(LltJbd):
             file = exception_traceback.tb_frame.f_code.co_filename
             line = exception_traceback.tb_lineno
             logger.error(f"BleakClient(): TimeoutError: {repr(exception_object)} of type {exception_type} " f"in {file} line #{line}")
-            # needed?
-            self.run = False
+            self.bt_loop = None
+            await self._reconnect_backoff()
             return
 
         except Exception:
@@ -128,9 +143,19 @@ class LltJbd_Ble(LltJbd):
             file = exception_traceback.tb_frame.f_code.co_filename
             line = exception_traceback.tb_lineno
             logger.error(f"BleakClient(): Exception occurred: {repr(exception_object)} of type {exception_type} " f"in {file} line #{line}")
-            # needed?
-            self.run = False
+            self.bt_loop = None
+            await self._reconnect_backoff()
             return
+
+    async def _reconnect_backoff(self) -> None:
+        """Sleep for the current back-off and double it for next time, capped
+        at RECONNECT_BACKOFF_MAX_S. Resets to RECONNECT_BACKOFF_INITIAL_S after
+        a successful connection so a single hiccup doesn't permanently slow
+        down recovery."""
+        delay = self.reconnect_backoff_s
+        logger.info(f"|- Reconnect back-off: {delay}s before next attempt")
+        await asyncio.sleep(delay)
+        self.reconnect_backoff_s = min(delay * 2, RECONNECT_BACKOFF_MAX_S)
 
     def background_loop(self):
         while self.run and self.main_thread.is_alive():
