@@ -292,6 +292,12 @@ class Battery(ABC):
         self.dbus_external_objects: dict = None
         self.online: bool = None
         self.connection_info: str = "Initializing..."
+        self.last_successful_refresh: Union[float, None] = None
+        """
+        Unix timestamp of the last successful refresh_data() call, set by
+        ``DbusHelper.publish_battery()``. Surfaced on dbus as ``/LastUpdate``
+        for staleness detection.
+        """
         self.hardware_version: str = None
         self.cell_count: int = None
         self.start_time: int = int(time())

@@ -575,6 +575,11 @@ class DbusHelper:
         self._dbusservice.add_path("/State", self.battery.state, writeable=True)
         self._dbusservice.add_path("/ErrorCode", self.battery.error_code, writeable=True)
         self._dbusservice.add_path("/ConnectionInformation", "")
+        # Unix timestamp (seconds) of the last successful BMS refresh, or
+        # None if no refresh has succeeded yet. Lets the Cerbo and external
+        # consumers detect data staleness independently of the BMS-internal
+        # error counter.
+        self._dbusservice.add_path("/LastUpdate", None)
 
         # Create static battery info
         self._dbusservice.add_path(
@@ -892,6 +897,12 @@ class DbusHelper:
                     self.battery.setup_external_sensor()
 
             if result:
+                # Record success timestamp for staleness detection. Done
+                # before the error-count reset so /LastUpdate is correct
+                # even if the helper's bookkeeping below has a hiccup.
+                self.battery.last_successful_refresh = time()
+                self._dbusservice["/LastUpdate"] = int(self.battery.last_successful_refresh)
+
                 # reset error count, if last error was more than 60 seconds ago
                 if self.error["count"] > 0 and self.error["timestamp_last"] < int(time()) - 60:
                     self.error["cleared"] = True
