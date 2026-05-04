@@ -73,6 +73,7 @@
 * Changed: KS48100 BMS - Fixed charge/discharge calculation with https://github.com/mr-manuel/venus-os_dbus-serialbattery/pull/343 by @kopierschnitte
 * Changed: LLT/JBD BLE BMS - Fixed wrong charge/discharge fet assignment @mr-manuel
 * Changed: LLT/JBD BLE BMS - Survive transient BLE errors with exponential back-off (5s → 60s) instead of requiring a supervisor restart by @nrbrt
+* Changed: LLT/JBD BLE BMS - on_disconnect callback now invalidates bt_loop so concurrent reads short-circuit cleanly instead of dispatching onto a dead event loop by @nrbrt
 * CHanged: LLT/JBD BMS - Fixed issue with checksum missing bytes by @TheRealSbs
 * Changed: Made some dbus settings silent to not flood the localsettings service log by @mr-manuel
 * Changed: Mechanism to reset SOC via GUI, since it was not possible to set the same SOC twice by @mr-manuel

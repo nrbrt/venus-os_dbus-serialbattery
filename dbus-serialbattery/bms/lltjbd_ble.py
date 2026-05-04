@@ -77,7 +77,17 @@ class LltJbd_Ble(LltJbd):
         return self.device.name
 
     def on_disconnect(self, client):
-        logger.info("BLE client disconnected")
+        """Bleak invokes this when the peripheral drops the link.
+
+        Previously the callback only logged. We now also clear ``bt_loop``
+        so concurrent ``read_serial_data_llt()`` calls bail out
+        immediately (they short-circuit on ``if not self.bt_loop`` at
+        the top) instead of trying to dispatch a coroutine onto a now-
+        dead event loop. ``bt_main_loop()``'s ``async with BleakClient``
+        block still does the actual reconnection work.
+        """
+        logger.warning("BLE client disconnected — invalidating bt_loop")
+        self.bt_loop = None
 
     async def bt_main_loop(self):
         logger.info("|- Try to connect to LltJbd_Ble at " + self.address)

@@ -196,3 +196,29 @@ def test_repeated_failures_grow_backoff():
 
     assert drv.reconnect_backoff_s == min(initial * 8, RECONNECT_BACKOFF_MAX_S)
     assert drv.run is True
+
+
+# ---------- on_disconnect cleanup ----------
+
+
+def test_on_disconnect_clears_bt_loop():
+    """Bleak's disconnect callback must invalidate bt_loop so concurrent
+    read_serial_data_llt() calls bail out cleanly on the existing
+    `if not self.bt_loop: return False` guard."""
+    drv = _make_driver()
+    drv.bt_loop = MagicMock()  # pretend a loop is active
+
+    drv.on_disconnect(MagicMock())  # bleak passes the client, we ignore it
+
+    assert drv.bt_loop is None
+
+
+def test_read_serial_data_llt_short_circuits_after_disconnect():
+    """Smoke-test the integration with the existing guard: after
+    on_disconnect() clears bt_loop, read_serial_data_llt() returns False
+    without touching asyncio/Bleak."""
+    drv = _make_driver()
+    drv.bt_loop = MagicMock()
+    drv.on_disconnect(MagicMock())
+
+    assert drv.read_serial_data_llt(b"\xdd\xa5\x03\x00\xff\xfd\x77") is False
