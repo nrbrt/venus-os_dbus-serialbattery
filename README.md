@@ -17,7 +17,7 @@ The upstream driver kills itself with `sys.exit(1)` or `self.run = False` on eve
 - **Transient scanner / connect errors** (asyncio TimeoutError, generic exceptions, "no device found") no longer set `self.run = False`. Instead `bt_main_loop()` returns and `background_loop()` retries with an exponential back-off (5s → doubles → capped at 60s). The back-off resets to 5s on the first successful connection so a single hiccup doesn't permanently slow recovery.
 - **`on_disconnect` callback** now invalidates `bt_loop` so concurrent `read_serial_data_llt()` calls short-circuit on the existing `if not self.bt_loop` guard instead of dispatching coroutines onto a dead event loop.
 - **BLE-level heartbeat** (`BLE_HEARTBEAT_TIMEOUT_S = 15s`) detects "silently dead" connections — `BleakClient.is_connected` keeps reporting True (BlueZ hasn't torn down the link yet) but no bytes flow from the BMS. `bt_main_loop()`'s while-loop polls `_ble_data_is_stale()` and breaks out to trigger reconnect when the timeout passes.
-- **`reset_hci_uart`** no longer calls `sys.exit(1)`. Kernel-module reload (`rmmod hci_uart`/`btbcm`, `modprobe ...`) and hciattach restart now happen in-process via the `subprocess` module (with `shlex.split` and `start_new_session=True` for the hciattach respawn). The driver stays alive and `_reconnect_backoff()` paces the retries.
+- **`reset_hci_uart`** no longer calls `sys.exit(1)`. Kernel-module reload (`rmmod hci_uart`/`btbcm`, `modprobe ...`) and hciattach restart now happen in-process via the `subprocess` module (with `shlex.split` and `start_new_session=True` for the hciattach respawn). The driver stays alive and `_reconnect_backoff()` paces the retries. The method itself is `async` so its ~7s of settle/wait time uses `await asyncio.sleep` instead of blocking the event loop — important when sibling connections still need their heartbeat to tick.
 - Migrated the previous shell-out invocations to `subprocess.run` with argv lists for shell-injection safety.
 
 ### API additions (additive — no breaking changes)
@@ -26,7 +26,7 @@ The upstream driver kills itself with `sys.exit(1)` or `self.run = False` on eve
 
 ### Quality improvements
 
-- **21 new unit tests** under `tests/bms/test_lltjbd_ble.py` and `tests/test_last_successful_refresh.py`, covering the back-off mechanics, heartbeat predicate, on_disconnect cleanup, in-process HCI reset, and the `/LastUpdate` contract. Bleak is stubbed via `sys.modules` so the suite runs on any developer machine without BlueZ or hardware. **123 tests green** total (was 102 on upstream).
+- **23 new unit tests** under `tests/bms/test_lltjbd_ble.py` and `tests/test_last_successful_refresh.py`, covering the back-off mechanics, heartbeat predicate **and** its end-to-end break out of `bt_main_loop`'s while-loop, on_disconnect cleanup, in-process HCI reset (including a regression guard that asserts the module no longer imports the blocking `time.sleep`), and the `/LastUpdate` contract. Bleak is stubbed via `sys.modules` so the suite runs on any developer machine without BlueZ or hardware. **125 tests green** total (was 102 on upstream).
 
 ### What did NOT change
 
