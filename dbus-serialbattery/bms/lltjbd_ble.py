@@ -11,7 +11,7 @@ import threading
 import sys
 import re
 from asyncio import CancelledError
-from time import sleep
+from time import sleep, time
 from typing import Union, Optional
 from utils import get_connection_error_message, logger, BLUETOOTH_FORCE_RESET_BLE_STACK
 from utils_ble import restart_ble_hardware_and_bluez_driver
@@ -31,6 +31,14 @@ MAX_RESPONSE_SIZE = 256
 # re-enters after this back-off.
 RECONNECT_BACKOFF_INITIAL_S = 5
 RECONNECT_BACKOFF_MAX_S = 60
+
+# BLE-level heartbeat: if no bytes are received from the BMS for this many
+# seconds while the BleakClient still claims to be connected, force a
+# reconnect. Catches "silently dead" links — BlueZ keeps the connection
+# object alive but no data flows. Tuned so it's longer than the BMS
+# poll_interval (1000 ms by default) plus several full status reads, but
+# short enough that a stuck link is detected within one Cerbo update window.
+BLE_HEARTBEAT_TIMEOUT_S = 15
 
 
 class LltJbd_Ble(LltJbd):
@@ -53,6 +61,10 @@ class LltJbd_Ble(LltJbd):
         self.ready_event: Optional[asyncio.Event] = None
 
         self.reconnect_backoff_s = RECONNECT_BACKOFF_INITIAL_S
+        # Heartbeat timestamp — updated on every successful BLE byte
+        # arrival in send_command(). Initialised to construction time so
+        # the staleness check doesn't false-fire before the first read.
+        self.last_ble_data_received: float = time()
 
         self.hci_uart_ok = True
         if not os.path.isfile("/tmp/dbus-blebattery-hciattach"):
@@ -122,10 +134,14 @@ class LltJbd_Ble(LltJbd):
                 self.bt_loop = asyncio.get_event_loop()
                 self.response_queue = asyncio.Queue()
                 self.ready_event.set()
-                # Successful connection — reset back-off so the next dropout
-                # starts retrying quickly again.
+                # Successful connection — reset back-off and heartbeat so
+                # the next dropout starts retrying quickly again.
                 self.reconnect_backoff_s = RECONNECT_BACKOFF_INITIAL_S
+                self.last_ble_data_received = time()
                 while self.run and client.is_connected and self.main_thread.is_alive():
+                    if self._ble_data_is_stale(time()):
+                        logger.warning(f"BLE heartbeat: no data for >{BLE_HEARTBEAT_TIMEOUT_S}s, forcing reconnect")
+                        break
                     await asyncio.sleep(0.1)
             self.bt_loop = None
 
@@ -166,6 +182,14 @@ class LltJbd_Ble(LltJbd):
         logger.info(f"|- Reconnect back-off: {delay}s before next attempt")
         await asyncio.sleep(delay)
         self.reconnect_backoff_s = min(delay * 2, RECONNECT_BACKOFF_MAX_S)
+
+    def _ble_data_is_stale(self, now: float) -> bool:
+        """Return True if no BLE data has been received from the BMS for
+        longer than ``BLE_HEARTBEAT_TIMEOUT_S``. Used by ``bt_main_loop``
+        to detect 'silently dead' connections — BlueZ keeps the link
+        object alive but no bytes flow, which the existing
+        ``client.is_connected`` check doesn't catch."""
+        return (now - self.last_ble_data_received) > BLE_HEARTBEAT_TIMEOUT_S
 
     def background_loop(self):
         while self.run and self.main_thread.is_alive():
@@ -243,6 +267,11 @@ class LltJbd_Ble(LltJbd):
         await self.bt_client.write_gatt_char(BLE_CHARACTERISTICS_TX_UUID, command, False)
         result = await fut
         await self.bt_client.stop_notify(BLE_CHARACTERISTICS_RX_UUID)
+
+        # Heartbeat: bytes arrived from the BMS. The bt_main_loop's
+        # while-loop polls _ble_data_is_stale() against this timestamp
+        # to decide whether to force a reconnect.
+        self.last_ble_data_received = time()
 
         return result
 

@@ -41,6 +41,7 @@ import os  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "dbus-serialbattery"))
 
 from bms.lltjbd_ble import (  # noqa: E402
+    BLE_HEARTBEAT_TIMEOUT_S,
     LltJbd_Ble,
     RECONNECT_BACKOFF_INITIAL_S,
     RECONNECT_BACKOFF_MAX_S,
@@ -64,6 +65,7 @@ def _make_driver():
     drv.ready_event = asyncio.Event()
     drv.hci_uart_ok = True
     drv.reconnect_backoff_s = RECONNECT_BACKOFF_INITIAL_S
+    drv.last_ble_data_received = 0.0  # tests set this explicitly per case
     drv.main_thread = MagicMock()
     drv.main_thread.is_alive.return_value = True
     return drv
@@ -222,3 +224,63 @@ def test_read_serial_data_llt_short_circuits_after_disconnect():
     drv.on_disconnect(MagicMock())
 
     assert drv.read_serial_data_llt(b"\xdd\xa5\x03\x00\xff\xfd\x77") is False
+
+
+# ---------- BLE heartbeat ----------
+
+
+def test_ble_data_is_stale_returns_false_for_recent_data():
+    """Just-arrived data: not stale."""
+    drv = _make_driver()
+    now = 1714000000.0
+    drv.last_ble_data_received = now - 1.0  # 1 second ago
+    assert drv._ble_data_is_stale(now) is False
+
+
+def test_ble_data_is_stale_returns_false_at_threshold_boundary():
+    """Exactly at the timeout (not strictly *greater*): still fresh."""
+    drv = _make_driver()
+    now = 1714000000.0
+    drv.last_ble_data_received = now - BLE_HEARTBEAT_TIMEOUT_S
+    assert drv._ble_data_is_stale(now) is False
+
+
+def test_ble_data_is_stale_returns_true_past_timeout():
+    """Past the timeout window: stale."""
+    drv = _make_driver()
+    now = 1714000000.0
+    drv.last_ble_data_received = now - (BLE_HEARTBEAT_TIMEOUT_S + 1)
+    assert drv._ble_data_is_stale(now) is True
+
+
+def test_send_command_updates_heartbeat_after_successful_read():
+    """Each successful BLE round-trip must bump last_ble_data_received,
+    otherwise a long-running but slowly-reading connection would falsely
+    look stale."""
+    import bms.lltjbd_ble as ble_module  # noqa: E402 — local for the patch
+
+    drv = _make_driver()
+    drv.last_ble_data_received = 1000.0  # arbitrary old timestamp
+
+    # Mock the bleak client so send_command can run without real BLE.
+    fake_client = MagicMock()
+    fake_client.start_notify = AsyncMock()
+    fake_client.write_gatt_char = AsyncMock()
+    fake_client.stop_notify = AsyncMock()
+    drv.bt_client = fake_client
+
+    # Pre-resolved future avoids needing the rx_callback to fire.
+    drv.bt_loop = asyncio.new_event_loop()
+    try:
+        async def _run():
+            fut = drv.bt_loop.create_future()
+            fut.set_result(bytearray(b"\x00" * 10))
+            with patch.object(drv.bt_loop, "create_future", return_value=fut), \
+                 patch.object(ble_module, "time", return_value=2000.0):
+                await drv.send_command(bytearray(b"\xdd\xa5\x03\x00\xff\xfd\x77"))
+        drv.bt_loop.run_until_complete(_run())
+    finally:
+        drv.bt_loop.close()
+        drv.bt_loop = None
+
+    assert drv.last_ble_data_received == 2000.0
