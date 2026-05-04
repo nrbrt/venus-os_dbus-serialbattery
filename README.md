@@ -4,6 +4,42 @@ This driver is for Venus OS devices (any GX device sold by Victron or a Raspberr
 
 The driver will communicate with a Battery Management System (BMS) that support serial (RS232, RS485 or TTL UART) and Bluetooth communication (see [BMS feature comparison](https://mr-manuel.github.io/venus-os_dbus-serialbattery_docs/general/features#bms-feature-comparison) for details). The data is then published to the Venus OS system (dbus). The main purpose is to act as a Battery Monitor in your GX and supply State of Charge (SoC) and other values to the inverter/charger.
 
+---
+
+## How this fork differs from upstream
+
+This is a focused fork of [mr-manuel/venus-os_dbus-serialbattery](https://github.com/mr-manuel/venus-os_dbus-serialbattery) that hardens the **LLT/JBD BLE driver** for use on a boat where supervisor-restart cycles aren't acceptable as a recovery mechanism. The full list lives in [`CHANGELOG.md`](CHANGELOG.md); the highlights:
+
+### Reliability fixes (LLT/JBD BLE)
+
+The upstream driver kills itself with `sys.exit(1)` or `self.run = False` on every transient BLE error and relies on the systemd/daemontools supervisor to bring it back up. On a boat where the BMS connection is the safety-relevant link, that's a costly recovery path. This fork replaces the crash-and-restart pattern with in-process recovery:
+
+- **Transient scanner / connect errors** (asyncio TimeoutError, generic exceptions, "no device found") no longer set `self.run = False`. Instead `bt_main_loop()` returns and `background_loop()` retries with an exponential back-off (5s → doubles → capped at 60s). The back-off resets to 5s on the first successful connection so a single hiccup doesn't permanently slow recovery.
+- **`on_disconnect` callback** now invalidates `bt_loop` so concurrent `read_serial_data_llt()` calls short-circuit on the existing `if not self.bt_loop` guard instead of dispatching coroutines onto a dead event loop.
+- **BLE-level heartbeat** (`BLE_HEARTBEAT_TIMEOUT_S = 15s`) detects "silently dead" connections — `BleakClient.is_connected` keeps reporting True (BlueZ hasn't torn down the link yet) but no bytes flow from the BMS. `bt_main_loop()`'s while-loop polls `_ble_data_is_stale()` and breaks out to trigger reconnect when the timeout passes.
+- **`reset_hci_uart`** no longer calls `sys.exit(1)`. Kernel-module reload (`rmmod hci_uart`/`btbcm`, `modprobe ...`) and hciattach restart now happen in-process via the `subprocess` module (with `shlex.split` and `start_new_session=True` for the hciattach respawn). The driver stays alive and `_reconnect_backoff()` paces the retries.
+- Migrated the previous shell-out invocations to `subprocess.run` with argv lists for shell-injection safety.
+
+### API additions (additive — no breaking changes)
+
+- **`/LastUpdate` dbus path** holding the Unix timestamp (int seconds) of the last successful BMS refresh. Lets the Cerbo and any external consumer detect data staleness independently of the existing `error["count"]` and `BLOCK_ON_DISCONNECT` machinery. Backed by a new `Battery.last_successful_refresh: Union[float, None]` attribute on the base class, set by `DbusHelper.publish_battery()` after each successful `refresh_data()`.
+
+### Quality improvements
+
+- **21 new unit tests** under `tests/bms/test_lltjbd_ble.py` and `tests/test_last_successful_refresh.py`, covering the back-off mechanics, heartbeat predicate, on_disconnect cleanup, in-process HCI reset, and the `/LastUpdate` contract. Bleak is stubbed via `sys.modules` so the suite runs on any developer machine without BlueZ or hardware. **123 tests green** total (was 102 on upstream).
+
+### What did NOT change
+
+- All other BMS protocols (JKBMS, Daly, JBD non-BLE, etc.) are untouched — no functional changes outside `bms/lltjbd_ble.py`, `battery.py`, and `dbushelper.py`.
+- The Venus OS install procedure, dbus path layout, configuration file format, and `BLOCK_ON_DISCONNECT_*` mechanics are all unchanged. Existing `config.ini` files keep working.
+- The driver still imports cleanly without `bleak` installed locally — same `sys.modules` stub trick as upstream's `tests/conftest.py`.
+
+### Status
+
+**Pre-hardware-test.** The watchdog stack is software-validated by the test suite but not yet exercised on a real Cerbo + JBD BMS over a multi-day soak. PRs back to upstream are deferred until that hardware validation is done.
+
+---
+
 ## History
 
 The first version of this driver was released by [Louisvdw](https://github.com/Louisvdw/dbus-serialbattery) in September 2020.
