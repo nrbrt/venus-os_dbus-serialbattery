@@ -7,6 +7,8 @@ import asyncio
 import atexit
 import functools
 import os
+import shlex
+import subprocess
 import threading
 import sys
 import re
@@ -331,23 +333,75 @@ class LltJbd_Ble(LltJbd):
         restart_ble_hardware_and_bluez_driver()
 
     def reset_hci_uart(self):
-        logger.error("Reset of hci_uart stack... Reconnecting to: " + self.address)
-        self.run = False
-        os.system("pkill -f 'hciattach'")
-        sleep(0.5)
-        os.system("rmmod hci_uart")
-        os.system("rmmod btbcm")
-        os.system("modprobe hci_uart")
-        os.system("modprobe btbcm")
-        sys.exit(1)
-        # execfile = open("/tmp/dbus-blebattery-hciattach", "r")
-        # sleep(5)
-        # os.system(execfile.readline())
-        # os.system(execfile.readline())
-        # execfile.close()
-        # sleep(0.5)
-        # os.system("bluetoothctl connect " + self.address)
-        # self.run = True
+        """Reset the HCI UART stack and BlueZ kernel modules in-process.
+
+        Previously this method ended in ``self.run = False`` followed by
+        ``sys.exit(1)``, forcing a supervisor restart of the whole driver.
+        Now we tear down the link in-process, reload the kernel modules,
+        restart hciattach, and let ``background_loop()``'s
+        retry-with-backoff bring the BMS connection back online.
+
+        Called from ``bt_main_loop()`` only when the BleakScanner
+        exception text contains 'Bluetooth adapters' — i.e. when BlueZ
+        itself reports no usable HCI device. Cheaper recovery paths
+        (transient scan timeout, peripheral disconnect, heartbeat
+        timeout) take the regular back-off route without touching kernel
+        modules.
+        """
+        logger.warning("Reset of hci_uart stack — will reconnect to: " + self.address)
+
+        # Drop in-process state so any pending async reads bail out cleanly.
+        self.bt_loop = None
+        self.bt_client = None
+        self.device = None
+
+        # Tear down and reload the kernel-side stack. Args are static and
+        # split into argv lists so we don't need a shell.
+        for cmd in (
+            ["pkill", "-f", "hciattach"],
+            ["rmmod", "hci_uart"],
+            ["rmmod", "btbcm"],
+            ["modprobe", "hci_uart"],
+            ["modprobe", "btbcm"],
+        ):
+            subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if cmd[0] == "pkill":
+                sleep(0.5)
+        sleep(2)  # let the modules settle before re-attaching the UART
+
+        # Restart hciattach using the command captured at driver init
+        # (see __init__ — /tmp/dbus-blebattery-hciattach holds the
+        # original `ps -ww` row). Without this the modules are reloaded
+        # but no userspace process is talking to the UART.
+        if os.path.isfile("/tmp/dbus-blebattery-hciattach"):
+            try:
+                with open("/tmp/dbus-blebattery-hciattach", "r") as f:
+                    hciattach_cmd = f.readline().strip()
+                if hciattach_cmd:
+                    # shlex.split + Popen with shell=False so we tokenize
+                    # the saved command line instead of handing it to a
+                    # shell (the file content originates from `ps -ww`,
+                    # not user input, but no reason to add a shell layer).
+                    # start_new_session detaches it so it survives this
+                    # function returning.
+                    subprocess.Popen(
+                        shlex.split(hciattach_cmd),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    sleep(5)  # give hciattach a moment to bring the device up
+            except Exception as e:
+                logger.error(f"Failed to restart hciattach: {e}")
+        else:
+            logger.warning("No hciattach command saved at driver init; relying on system to re-spawn it")
+
+        # Heartbeat reset so _ble_data_is_stale doesn't immediately fire
+        # against the pre-reset timestamp on the first reconnect attempt.
+        self.last_ble_data_received = time()
+
+        # NOTE: self.run stays True. background_loop() will re-enter
+        # bt_main_loop() and _reconnect_backoff() spaces out retries.
 
 
 if __name__ == "__main__":

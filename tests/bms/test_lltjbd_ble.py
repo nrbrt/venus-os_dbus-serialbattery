@@ -9,6 +9,7 @@ back-off so the loop can keep retrying.
 """
 
 import asyncio
+import shlex
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -251,6 +252,90 @@ def test_ble_data_is_stale_returns_true_past_timeout():
     now = 1714000000.0
     drv.last_ble_data_received = now - (BLE_HEARTBEAT_TIMEOUT_S + 1)
     assert drv._ble_data_is_stale(now) is True
+
+
+# ---------- reset_hci_uart in-process recovery ----------
+
+
+def test_reset_hci_uart_does_not_kill_driver():
+    """Previously: ended with sys.exit(1) and self.run = False — supervisor
+    restart needed. Now: in-process recovery, run stays True, state is
+    cleared so background_loop's retry takes over."""
+    drv = _make_driver()
+    drv.bt_loop = MagicMock()
+    drv.bt_client = MagicMock()
+    drv.device = MagicMock()
+
+    with patch("bms.lltjbd_ble.subprocess.run") as run_mock, \
+         patch("bms.lltjbd_ble.subprocess.Popen") as popen_mock, \
+         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.os.path.isfile", return_value=False):
+        drv.reset_hci_uart()
+
+    assert drv.run is True
+    assert drv.bt_loop is None
+    assert drv.bt_client is None
+    assert drv.device is None
+    assert run_mock.call_count == 5  # pkill + 2x rmmod + 2x modprobe
+    popen_mock.assert_not_called()  # hciattach file doesn't exist in this test
+
+
+def test_reset_hci_uart_invokes_kernel_module_commands_in_order():
+    """The 5 module-management commands must run in the right sequence."""
+    drv = _make_driver()
+
+    with patch("bms.lltjbd_ble.subprocess.run") as run_mock, \
+         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.os.path.isfile", return_value=False):
+        drv.reset_hci_uart()
+
+    # Each call's first positional arg is the argv list.
+    argvs = [call.args[0] for call in run_mock.call_args_list]
+    assert argvs == [
+        ["pkill", "-f", "hciattach"],
+        ["rmmod", "hci_uart"],
+        ["rmmod", "btbcm"],
+        ["modprobe", "hci_uart"],
+        ["modprobe", "btbcm"],
+    ]
+
+
+def test_reset_hci_uart_restarts_hciattach_when_command_saved():
+    """If /tmp/dbus-blebattery-hciattach holds a command, hciattach must
+    be re-spawned via Popen in a detached session."""
+    drv = _make_driver()
+    fake_cmd = "/usr/bin/hciattach /dev/ttyAMA0 bcm43xx 921600"
+
+    with patch("bms.lltjbd_ble.subprocess.run"), \
+         patch("bms.lltjbd_ble.subprocess.Popen") as popen_mock, \
+         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.os.path.isfile", return_value=True), \
+         patch("builtins.open", create=True) as open_mock:
+        open_mock.return_value.__enter__.return_value.readline.return_value = fake_cmd + "\n"
+        drv.reset_hci_uart()
+
+    popen_mock.assert_called_once()
+    args, kwargs = popen_mock.call_args
+    # First positional arg should be the shlex-split argv list.
+    assert args[0] == shlex.split(fake_cmd)
+    # Detached session so hciattach survives this function returning.
+    assert kwargs.get("start_new_session") is True
+
+
+def test_reset_hci_uart_resets_heartbeat_timestamp():
+    """After a stack reset the heartbeat timestamp must be advanced so
+    _ble_data_is_stale doesn't fire against the pre-reset value on the
+    first reconnect attempt."""
+    drv = _make_driver()
+    drv.last_ble_data_received = 100.0  # ancient
+
+    with patch("bms.lltjbd_ble.subprocess.run"), \
+         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.os.path.isfile", return_value=False), \
+         patch("bms.lltjbd_ble.time", return_value=5000.0):
+        drv.reset_hci_uart()
+
+    assert drv.last_ble_data_received == 5000.0
 
 
 def test_send_command_updates_heartbeat_after_successful_read():
