@@ -13,7 +13,7 @@ import threading
 import sys
 import re
 from asyncio import CancelledError
-from time import sleep, time
+from time import time
 from typing import Union, Optional
 from utils import get_connection_error_message, logger, BLUETOOTH_FORCE_RESET_BLE_STACK
 from utils_ble import restart_ble_hardware_and_bluez_driver
@@ -113,14 +113,14 @@ class LltJbd_Ble(LltJbd):
             file = exception_traceback.tb_frame.f_code.co_filename
             line = exception_traceback.tb_lineno
             if "Bluetooth adapters" in repr(exception_object):
-                self.reset_hci_uart()
+                await self.reset_hci_uart()
             else:
                 logger.error(f"BleakScanner(): Exception occurred: {repr(exception_object)} of type {exception_type} " f"in {file} line #{line}")
 
             self.device = None
             await asyncio.sleep(0.5)
             # allow the bluetooth connection to recover
-            sleep(5)
+            await asyncio.sleep(5)
 
         if not self.device:
             # Don't kill the driver — background_loop() will retry after a
@@ -332,7 +332,7 @@ class LltJbd_Ble(LltJbd):
 
         restart_ble_hardware_and_bluez_driver()
 
-    def reset_hci_uart(self):
+    async def reset_hci_uart(self) -> None:
         """Reset the HCI UART stack and BlueZ kernel modules in-process.
 
         Previously this method ended in ``self.run = False`` followed by
@@ -347,6 +347,11 @@ class LltJbd_Ble(LltJbd):
         (transient scan timeout, peripheral disconnect, heartbeat
         timeout) take the regular back-off route without touching kernel
         modules.
+
+        ``async`` so the ~7s of total settle/wait time uses
+        ``await asyncio.sleep`` instead of blocking ``time.sleep`` —
+        otherwise the entire event loop (including the heartbeat poll
+        for any sibling connection) would freeze during recovery.
         """
         logger.warning("Reset of hci_uart stack — will reconnect to: " + self.address)
 
@@ -366,8 +371,8 @@ class LltJbd_Ble(LltJbd):
         ):
             subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if cmd[0] == "pkill":
-                sleep(0.5)
-        sleep(2)  # let the modules settle before re-attaching the UART
+                await asyncio.sleep(0.5)
+        await asyncio.sleep(2)  # let the modules settle before re-attaching the UART
 
         # Restart hciattach using the command captured at driver init
         # (see __init__ — /tmp/dbus-blebattery-hciattach holds the
@@ -390,7 +395,7 @@ class LltJbd_Ble(LltJbd):
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
                     )
-                    sleep(5)  # give hciattach a moment to bring the device up
+                    await asyncio.sleep(5)  # give hciattach a moment to bring the device up
             except Exception as e:
                 logger.error(f"Failed to restart hciattach: {e}")
         else:

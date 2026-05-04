@@ -268,9 +268,9 @@ def test_reset_hci_uart_does_not_kill_driver():
 
     with patch("bms.lltjbd_ble.subprocess.run") as run_mock, \
          patch("bms.lltjbd_ble.subprocess.Popen") as popen_mock, \
-         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.asyncio.sleep", new=AsyncMock()), \
          patch("bms.lltjbd_ble.os.path.isfile", return_value=False):
-        drv.reset_hci_uart()
+        asyncio.run(drv.reset_hci_uart())
 
     assert drv.run is True
     assert drv.bt_loop is None
@@ -285,9 +285,9 @@ def test_reset_hci_uart_invokes_kernel_module_commands_in_order():
     drv = _make_driver()
 
     with patch("bms.lltjbd_ble.subprocess.run") as run_mock, \
-         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.asyncio.sleep", new=AsyncMock()), \
          patch("bms.lltjbd_ble.os.path.isfile", return_value=False):
-        drv.reset_hci_uart()
+        asyncio.run(drv.reset_hci_uart())
 
     # Each call's first positional arg is the argv list.
     argvs = [call.args[0] for call in run_mock.call_args_list]
@@ -308,11 +308,11 @@ def test_reset_hci_uart_restarts_hciattach_when_command_saved():
 
     with patch("bms.lltjbd_ble.subprocess.run"), \
          patch("bms.lltjbd_ble.subprocess.Popen") as popen_mock, \
-         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.asyncio.sleep", new=AsyncMock()), \
          patch("bms.lltjbd_ble.os.path.isfile", return_value=True), \
          patch("builtins.open", create=True) as open_mock:
         open_mock.return_value.__enter__.return_value.readline.return_value = fake_cmd + "\n"
-        drv.reset_hci_uart()
+        asyncio.run(drv.reset_hci_uart())
 
     popen_mock.assert_called_once()
     args, kwargs = popen_mock.call_args
@@ -330,12 +330,99 @@ def test_reset_hci_uart_resets_heartbeat_timestamp():
     drv.last_ble_data_received = 100.0  # ancient
 
     with patch("bms.lltjbd_ble.subprocess.run"), \
-         patch("bms.lltjbd_ble.sleep"), \
+         patch("bms.lltjbd_ble.asyncio.sleep", new=AsyncMock()), \
          patch("bms.lltjbd_ble.os.path.isfile", return_value=False), \
          patch("bms.lltjbd_ble.time", return_value=5000.0):
-        drv.reset_hci_uart()
+        asyncio.run(drv.reset_hci_uart())
 
     assert drv.last_ble_data_received == 5000.0
+
+
+def test_reset_hci_uart_uses_async_sleep_not_blocking_sleep():
+    """Critical: the recovery path must yield the event loop during its
+    long settle/wait windows. If reset_hci_uart used a blocking sleep,
+    the heartbeat poll for any sibling connection would freeze for ~7
+    seconds — exactly when we need it most.
+
+    We assert that asyncio.sleep gets awaited (multiple times). We also
+    assert the module no longer imports the blocking ``time.sleep``
+    name at all — that's the strongest possible regression guard
+    against someone reverting the async migration.
+    """
+    import bms.lltjbd_ble as ble_module
+
+    assert not hasattr(ble_module, "sleep"), (
+        "bms.lltjbd_ble must not import the blocking time.sleep — use asyncio.sleep instead"
+    )
+
+    drv = _make_driver()
+
+    with patch("bms.lltjbd_ble.subprocess.run"), \
+         patch("bms.lltjbd_ble.asyncio.sleep", new=AsyncMock()) as async_sleep, \
+         patch("bms.lltjbd_ble.os.path.isfile", return_value=False):
+        asyncio.run(drv.reset_hci_uart())
+
+    assert async_sleep.await_count >= 2  # at least the pkill-pause + module-settle
+
+
+def test_bt_main_loop_exits_while_loop_when_heartbeat_goes_stale():
+    """End-to-end: stale heartbeat inside the inner while-loop must
+    cause bt_main_loop to break out and return cleanly. This is the
+    bridge between _ble_data_is_stale (predicate, unit-tested) and
+    actually triggering a reconnect via background_loop.
+
+    We let the BleakClient context-manager succeed and report
+    is_connected=True. The loop iterates a few times against a recent
+    heartbeat (no break), then we patch ``time`` forward past the
+    timeout and watch the next iteration break out.
+    """
+    import bms.lltjbd_ble as ble_module
+
+    drv = _make_driver()
+    drv.ready_event = asyncio.Event()  # bt_main_loop sets this
+
+    # Scanner returns a device.
+    async def _scan(*args, **kwargs):
+        return MagicMock()
+
+    # BleakClient context-manager that reports is_connected=True for the
+    # duration of the test.
+    fake_client = MagicMock()
+    fake_client.is_connected = True
+
+    class _AliveClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return fake_client
+
+        async def __aexit__(self, *args):
+            return False
+
+    # The first call to the patched ``time`` returns "fresh" (right after
+    # connect, last_ble_data_received was set to time()), the next call
+    # returns a moment past the heartbeat timeout. Use itertools.count
+    # so we don't run out of values if the loop ticks more than once.
+    base = 1000.0
+    times = iter([base, base, base, base + ble_module.BLE_HEARTBEAT_TIMEOUT_S + 1])
+
+    def _next_time():
+        try:
+            return next(times)
+        except StopIteration:
+            return base + ble_module.BLE_HEARTBEAT_TIMEOUT_S + 1
+
+    with patch("bms.lltjbd_ble.BleakScanner.find_device_by_address", new=_scan), \
+         patch("bms.lltjbd_ble.BleakClient", _AliveClient), \
+         patch("bms.lltjbd_ble.asyncio.sleep", new=AsyncMock()), \
+         patch("bms.lltjbd_ble.time", side_effect=_next_time):
+        asyncio.run(drv.bt_main_loop())
+
+    # After the heartbeat-triggered break, the async-with exit clears bt_loop.
+    assert drv.bt_loop is None
+    # And the driver is still alive — background_loop will retry.
+    assert drv.run is True
 
 
 def test_send_command_updates_heartbeat_after_successful_read():

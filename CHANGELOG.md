@@ -76,6 +76,7 @@
 * Changed: LLT/JBD BLE BMS - on_disconnect callback now invalidates bt_loop so concurrent reads short-circuit cleanly instead of dispatching onto a dead event loop by @nrbrt
 * Changed: LLT/JBD BLE BMS - BLE-level heartbeat detects 'silently dead' connections (BleakClient.is_connected stays True but no bytes flow) and forces a reconnect after BLE_HEARTBEAT_TIMEOUT_S = 15s without data by @nrbrt
 * Changed: LLT/JBD BLE BMS - reset_hci_uart now performs in-process kernel-module reload + hciattach restart instead of calling sys.exit(1) and requiring a supervisor restart. Migrated shell-out calls to subprocess for safety by @nrbrt
+* Changed: LLT/JBD BLE BMS - reset_hci_uart is async so its ~7s of settle/wait time uses await asyncio.sleep instead of blocking the event loop. Heartbeat-to-reconnect path now has end-to-end test coverage by @nrbrt
 * CHanged: LLT/JBD BMS - Fixed issue with checksum missing bytes by @TheRealSbs
 * Changed: Made some dbus settings silent to not flood the localsettings service log by @mr-manuel
 * Changed: Mechanism to reset SOC via GUI, since it was not possible to set the same SOC twice by @mr-manuel
