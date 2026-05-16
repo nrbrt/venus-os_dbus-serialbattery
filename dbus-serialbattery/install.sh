@@ -72,7 +72,7 @@ function restore_config {
 
 
 echo
-echo "*** Welcome to the dbus-serialbattery installer from mr-manuel! ***"
+echo "*** Welcome to the dbus-serialbattery installer (nrbrt's fork of mr-manuel)! ***"
 echo
 
 
@@ -83,14 +83,23 @@ if [ -z "$1" ]; then
     # fetch version numbers for different versions
     echo -n "Fetch available version numbers..."
 
-    # mr-manuel stable
-    latest_release_mrmanuel_stable=$(curl -s https://api.github.com/repos/mr-manuel/venus-os_dbus-serialbattery/releases/latest | sed -nE 's/.*"tag_name": "([^"]+)".*/\1/p')
+    # nrbrt stable
+    latest_release_nrbrt_stable=$(curl -s https://api.github.com/repos/nrbrt/venus-os_dbus-serialbattery/releases/latest | sed -nE 's/.*"tag_name": "([^"]+)".*/\1/p')
+    if [ -z "$latest_release_nrbrt_stable" ]; then
+        latest_release_nrbrt_stable="(none)"
+    fi
 
-    # mr-manuel beta
-    latest_release_mrmanuel_beta=$(curl -s https://api.github.com/repos/mr-manuel/venus-os_dbus-serialbattery/releases | sed -nE 's/.*"tag_name": "([^"]+(rc|beta))".*/\1/p' | head -n 1)
+    # nrbrt beta
+    latest_release_nrbrt_beta=$(curl -s https://api.github.com/repos/nrbrt/venus-os_dbus-serialbattery/releases | sed -nE 's/.*"tag_name": "([^"]+(rc|beta))".*/\1/p' | head -n 1)
+    if [ -z "$latest_release_nrbrt_beta" ]; then
+        latest_release_nrbrt_beta="(none)"
+    fi
 
-    # mr-manuel master branch
-    latest_release_mrmanuel_nightly=$(curl -s https://raw.githubusercontent.com/mr-manuel/venus-os_dbus-serialbattery/master/dbus-serialbattery/utils.py | grep DRIVER_VERSION | awk -F'"' '{print "v" $2}')
+    # nrbrt master branch
+    latest_release_nrbrt_nightly=$(curl -s https://raw.githubusercontent.com/nrbrt/venus-os_dbus-serialbattery/master/dbus-serialbattery/utils.py | grep DRIVER_VERSION | awk -F'"' '{print "v" $2}')
+    if [ -z "$latest_release_nrbrt_nightly" ]; then
+        latest_release_nrbrt_nightly="(none)"
+    fi
 
     # done
     echo " done."
@@ -113,13 +122,13 @@ if [ -z "$1" ]; then
 
 
     echo
-    PS3=$'\nSelect which version you want to install from mr-manuel\'s repo and enter the corresponding number: '
+    PS3=$'\nSelect which version you want to install from nrbrt\'s fork and enter the corresponding number: '
 
     # create list of versions
     version_list=(
-        "stable release \"$latest_release_mrmanuel_stable\" (stable, most up to date)"
-        "beta build \"$latest_release_mrmanuel_beta\" (no errors after 72 h runtime, long time testing needed)"
-        "nightly build \"$latest_release_mrmanuel_nightly\" (newest features and fixes, bugs possible)"
+        "stable release \"$latest_release_nrbrt_stable\" (stable, most up to date)"
+        "beta build \"$latest_release_nrbrt_beta\" (no errors after 72 h runtime, long time testing needed)"
+        "nightly build \"$latest_release_nrbrt_nightly\" (newest features and fixes, bugs possible)"
         "specific branch (specific feature testing)"
         "specific version"
         "local tar file"
@@ -129,13 +138,13 @@ if [ -z "$1" ]; then
     select version in "${version_list[@]}"
     do
         case $version in
-            "stable release \"$latest_release_mrmanuel_stable\" (stable, most up to date)")
+            "stable release \"$latest_release_nrbrt_stable\" (stable, most up to date)")
                 break
                 ;;
-            "beta build \"$latest_release_mrmanuel_beta\" (no errors after 72 h runtime, long time testing needed)")
+            "beta build \"$latest_release_nrbrt_beta\" (no errors after 72 h runtime, long time testing needed)")
                 break
                 ;;
-            "nightly build \"$latest_release_mrmanuel_nightly\" (newest features and fixes, bugs possible)")
+            "nightly build \"$latest_release_nrbrt_nightly\" (newest features and fixes, bugs possible)")
                 break
                 ;;
             "specific branch (specific feature testing)")
@@ -159,11 +168,11 @@ if [ -z "$1" ]; then
     echo "> Selected: $version"
     echo ""
 
-    if [ "$version" = "stable release \"$latest_release_mrmanuel_stable\" (stable, most up to date)" ]; then
+    if [ "$version" = "stable release \"$latest_release_nrbrt_stable\" (stable, most up to date)" ]; then
         version="stable"
-    elif [ "$version" = "beta build \"$latest_release_mrmanuel_beta\" (no errors after 72 h runtime, long time testing needed)" ]; then
+    elif [ "$version" = "beta build \"$latest_release_nrbrt_beta\" (no errors after 72 h runtime, long time testing needed)" ]; then
         version="beta"
-    elif [ "$version" = "nightly build \"$latest_release_mrmanuel_nightly\" (newest features and fixes, bugs possible)" ]; then
+    elif [ "$version" = "nightly build \"$latest_release_nrbrt_nightly\" (newest features and fixes, bugs possible)" ]; then
         version="nightly"
     elif [ "$version" = "specific branch (specific feature testing)" ]; then
         version="specific_branch"
@@ -188,9 +197,9 @@ elif [ "$1" = "--local" ]; then
 else
     echo
     echo "No valid command line argument given. Possible arguments are:"
-    echo "  --latest   Install the latest stable release from mr-manuel's repo"
-    echo "  --beta     Install the latest beta release from mr-manuel's repo"
-    echo "  --nightly  Install the latest nightly build from mr-manuel's repo"
+    echo "  --latest   Install the latest stable release from nrbrt's fork"
+    echo "  --beta     Install the latest beta release from nrbrt's fork"
+    echo "  --nightly  Install the latest nightly build from nrbrt's fork"
     echo "  --local    Install a local tar file from \"/tmp/venus-data.tar.gz\""
     echo
     exit 1
@@ -198,29 +207,59 @@ fi
 
 
 
-## stable release (mr-manuel, most up to date)
+## stable release (nrbrt fork, most up to date)
 if [ "$version" = "stable" ]; then
     # download stable release
-    echo "Downloading stable release from mr-manuel's repo..."
+    echo "Downloading stable release from nrbrt's fork..."
     echo ""
-    curl -s https://api.github.com/repos/mr-manuel/venus-os_dbus-serialbattery/releases/latest | sed -nE 's/.*"browser_download_url": "([^"]+)".*/\1/p' | wget -O /tmp/venus-data.tar.gz -i -
+    download_url=$(curl -s https://api.github.com/repos/nrbrt/venus-os_dbus-serialbattery/releases/latest | sed -nE 's/.*"browser_download_url": "([^"]+)".*/\1/p')
+    if [ -z "$download_url" ]; then
+        echo "ERROR: No stable release published yet on nrbrt's fork."
+        echo "       Use '--nightly' for the latest master, or '--branch <name>' for a specific branch."
+        # restore config.ini
+        restore_config
+        exit 1
+    fi
+    echo "$download_url" | wget -O /tmp/venus-data.tar.gz -i -
     # check if the download was successful
-    if [ $? -ne 0 ]; then
+    if [ $? -ne 0 ] || [ ! -s /tmp/venus-data.tar.gz ]; then
         echo "ERROR: Error during downloading the TAR file. Please try again."
+        # restore config.ini
+        restore_config
         exit 1
     fi
     echo ""
 fi
 
-## beta release (mr-manuel, most up to date)
+## beta release (nrbrt fork, most up to date)
 if [ "$version" = "beta" ]; then
     # download beta release
-    echo "Downloading beta release from mr-manuel's repo..."
+    echo "Downloading beta release from nrbrt's fork..."
     echo ""
-    curl -s https://api.github.com/repos/mr-manuel/venus-os_dbus-serialbattery/releases/tags/$latest_release_mrmanuel_beta | sed -nE 's/.*"browser_download_url": "([^"]+)".*/\1/p' | wget -O /tmp/venus-data.tar.gz -i -
+    # fetch beta tag if not already set (e.g. when invoked with --beta directly)
+    if [ -z "$latest_release_nrbrt_beta" ] || [ "$latest_release_nrbrt_beta" = "(none)" ]; then
+        latest_release_nrbrt_beta=$(curl -s https://api.github.com/repos/nrbrt/venus-os_dbus-serialbattery/releases | sed -nE 's/.*"tag_name": "([^"]+(rc|beta))".*/\1/p' | head -n 1)
+    fi
+    if [ -z "$latest_release_nrbrt_beta" ]; then
+        echo "ERROR: No beta/rc release published yet on nrbrt's fork."
+        echo "       Use '--latest' for the latest stable, '--nightly' for master, or '--branch <name>'."
+        # restore config.ini
+        restore_config
+        exit 1
+    fi
+    download_url=$(curl -s https://api.github.com/repos/nrbrt/venus-os_dbus-serialbattery/releases/tags/$latest_release_nrbrt_beta | sed -nE 's/.*"browser_download_url": "([^"]+)".*/\1/p')
+    if [ -z "$download_url" ]; then
+        echo "ERROR: Beta release '$latest_release_nrbrt_beta' has no downloadable asset."
+        # restore config.ini
+        restore_config
+        exit 1
+    fi
+    echo "$download_url" | wget -O /tmp/venus-data.tar.gz -i -
     # check if the download was successful
-    if [ $? -ne 0 ]; then
+    if [ $? -ne 0 ] || [ ! -s /tmp/venus-data.tar.gz ]; then
         echo "ERROR: Error during downloading the TAR file. Please try again."
+        # restore config.ini
+        restore_config
         exit 1
     fi
     echo ""
@@ -325,7 +364,7 @@ if [ "$version" = "nightly" ] || [ "$version" = "specific_branch" ]; then
     if [ "$version" = "specific_branch" ]; then
 
         # fetch branches from Github
-        branches=$(curl -s https://api.github.com/repos/mr-manuel/venus-os_dbus-serialbattery/branches | sed -nE 's/.*"name": "([^"]+)".*/\1/p')
+        branches=$(curl -s https://api.github.com/repos/nrbrt/venus-os_dbus-serialbattery/branches | sed -nE 's/.*"name": "([^"]+)".*/\1/p')
 
         # create a select menu
         echo
@@ -349,9 +388,9 @@ if [ "$version" = "nightly" ] || [ "$version" = "specific_branch" ]; then
     fi
 
     # download driver
-    echo "Downloading branch \"$branch\" from mr-manuel's repo..."
+    echo "Downloading branch \"$branch\" from nrbrt's fork..."
     echo ""
-    wget -O /tmp/$branch.zip https://github.com/mr-manuel/venus-os_dbus-serialbattery/archive/refs/heads/$branch.zip
+    wget -O /tmp/$branch.zip https://github.com/nrbrt/venus-os_dbus-serialbattery/archive/refs/heads/$branch.zip
     # check if the download was successful
     if [ $? -ne 0 ]; then
         echo "ERROR: Error during downloading the ZIP file. Please try again."
